@@ -1,5 +1,6 @@
-# APM
+# APM — installed packages (populated by `apm install` or copied manually)
 apm_modules/
+server/apm/apm_modules/
 apm.lock.yaml
 
 # Node / Next.js
