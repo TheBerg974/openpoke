@@ -250,7 +250,7 @@ export default function Page() {
         setTimeout(pollForAssistantResponse, 1000);
       }
     },
-    [loadHistory],
+    [loadHistory, mode],
   );
 
   const handleClearHistory = useCallback(async () => {
