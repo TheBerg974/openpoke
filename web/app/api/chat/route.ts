@@ -28,6 +28,49 @@ export async function POST(req: Request) {
     return new Response('Invalid JSON', { status: 400 });
   }
 
+  // ── APM mode ──────────────────────────────────────────────────────────────
+  if (body?.mode === 'apm') {
+    const { message, user_id, thread_id } = body;
+    if (!message || !user_id) {
+      return new Response('Missing message or user_id', { status: 400 });
+    }
+
+    const apmBase = process.env.APM_SERVER_URL || 'http://localhost:8002';
+    const url = `${apmBase.replace(/\/$/, '')}/api/v1/apm/chat`;
+
+    const payload: Record<string, string> = { user_id, message };
+    if (thread_id) payload.thread_id = thread_id;
+
+    try {
+      const upstream = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!upstream.ok) {
+        const errText = await upstream.text();
+        console.error('[apm-proxy] upstream error', upstream.status, errText);
+        return new Response(errText || 'APM upstream error', { status: upstream.status });
+      }
+
+      const data = await upstream.json();
+      // Return the reply as plain text (matches existing UI expectations)
+      // Also pass thread_id back via header so the client can persist it
+      return new Response(data.reply || '', {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'X-Thread-Id': data.thread_id || '',
+        },
+      });
+    } catch (e: any) {
+      console.error('[apm-proxy] fetch error', e);
+      return new Response(e?.message || 'APM proxy error', { status: 502 });
+    }
+  }
+
+  // ── Base mode (OpenRouter) ─────────────────────────────────────────────────
   const { messages } = body || {};
   if (!Array.isArray(messages) || messages.length === 0) {
     return new Response('Missing messages', { status: 400 });

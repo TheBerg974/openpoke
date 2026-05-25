@@ -1,8 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import SettingsModal, { useSettings } from '@/components/SettingsModal';
-import { ChatHeader } from '@/components/chat/ChatHeader';
+import { ChatHeader, type ChatMode } from '@/components/chat/ChatHeader';
 import { ChatInput } from '@/components/chat/ChatInput';
 import { ChatMessages } from '@/components/chat/ChatMessages';
 import { ErrorBanner } from '@/components/chat/ErrorBanner';
@@ -36,6 +36,19 @@ const toBubbles = (payload: any): ChatBubble[] => {
     }));
 };
 
+function getOrCreateUserId(): string {
+  try {
+    let id = localStorage.getItem('apm_user_id');
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem('apm_user_id', id);
+    }
+    return id;
+  } catch {
+    return 'anonymous';
+  }
+}
+
 export default function Page() {
   const { settings, setSettings } = useSettings();
   const [open, setOpen] = useState(false);
@@ -43,6 +56,8 @@ export default function Page() {
   const [messages, setMessages] = useState<ChatBubble[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(false);
+  const [mode, setMode] = useState<ChatMode>('base');
+  const apmThreadId = useRef<string | null>(null);
   const { scrollContainerRef, handleScroll } = useAutoScroll({
     items: messages,
     isWaiting: isWaitingForResponse,
@@ -105,7 +120,15 @@ export default function Page() {
   }, [loadHistory]);
 
   const canSubmit = input.trim().length > 0;
-  const inputPlaceholder = 'Type a message…';
+  const inputPlaceholder = mode === 'apm' ? 'APM — ask about Pokémon, draft emails, search…' : 'Type a message…';
+
+  const handleModeChange = useCallback((newMode: ChatMode) => {
+    setMode(newMode);
+    // Reset conversation when switching modes
+    setMessages([]);
+    setError(null);
+    apmThreadId.current = null;
+  }, []);
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -121,11 +144,48 @@ export default function Page() {
         role: 'user',
         text: formatEscapeCharacters(trimmed),
       };
-      setMessages(prev => {
-        const newMessages = [...prev, userMessage];
-        return newMessages;
-      });
+      setMessages(prev => [...prev, userMessage]);
 
+      // ── APM mode: synchronous response, no history polling needed ─────────
+      if (mode === 'apm') {
+        try {
+          const res = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              mode: 'apm',
+              message: trimmed,
+              user_id: getOrCreateUserId(),
+              thread_id: apmThreadId.current ?? undefined,
+            }),
+          });
+
+          if (!res.ok) {
+            const detail = await res.text();
+            throw new Error(detail || `APM error (${res.status})`);
+          }
+
+          const replyText = await res.text();
+          const newThreadId = res.headers.get('X-Thread-Id');
+          if (newThreadId) apmThreadId.current = newThreadId;
+
+          const assistantMsg: ChatBubble = {
+            id: `assistant-${Date.now()}`,
+            role: 'assistant',
+            text: formatEscapeCharacters(replyText),
+          };
+          setMessages(prev => [...prev, assistantMsg]);
+        } catch (err: any) {
+          console.error('[APM] send failed', err);
+          setError(err?.message || 'APM request failed');
+          setMessages(prev => prev.filter(msg => msg.id !== userMessage.id));
+        } finally {
+          setIsWaitingForResponse(false);
+        }
+        return;
+      }
+
+      // ── Base mode: existing OpenRouter + history-poll flow ────────────────
       try {
         const res = await fetch('/api/chat', {
           method: 'POST',
@@ -230,7 +290,7 @@ export default function Page() {
   return (
     <main className="chat-bg min-h-screen p-4 sm:p-6">
       <div className="chat-wrap flex flex-col">
-        <ChatHeader onOpenSettings={openSettings} onClearHistory={triggerClearHistory} />
+        <ChatHeader onOpenSettings={openSettings} onClearHistory={triggerClearHistory} mode={mode} onModeChange={handleModeChange} />
 
         <div className="card flex-1 overflow-hidden">
           <ChatMessages
